@@ -1,6 +1,14 @@
 #include <PubSubClient.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
 
+//OTA Config
+const char* deviceName = "ESP8266-Clapper";
+const char* OTAPass = "update";
+
+int shakeVal; //digital vibration sensor value
 int clapVal; //analog sound sensor value
 
 //Interval between first clap and stop counting claps
@@ -15,6 +23,7 @@ int clapSens = 4; //Sound sensitivity. higher number is less sensitive
 int clapLED1 = 12;
 int clapLED2 = 13;
 int clapLED3 = 14;
+int shakePin = 4;
 int micPin = A0;
 
 // Wifi + Server Configuration
@@ -59,7 +68,8 @@ void reconnect() {
     if (client.connect("Clapper")) {
       Serial.println("connected");
       // Once connected, publish an announcement
-      client.publish("clapper/clap", "0", true);      
+      client.publish("clapper/clap", "0", true);
+      client.publish("clapper/shake", "off", true);
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
@@ -76,6 +86,11 @@ void setup() {
    pinMode(clapLED2, OUTPUT);
    pinMode(clapLED3, OUTPUT);    
 
+  //OTA Setup
+  WiFi.mode(WIFI_STA);
+  ArduinoOTA.setPassword(OTAPass);
+  ArduinoOTA.setHostname(deviceName);
+  
   //start the serial line for debugging
   Serial.begin(115200);
   delay(100);
@@ -87,6 +102,34 @@ void setup() {
   setup_wifi();
   client.setServer(mqtt_server, 1883);
   client.setCallback(callback);
+
+  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+    Serial.println("Connection Failed! Rebooting...");
+    delay(5000);
+    ESP.restart();
+  }
+
+  ArduinoOTA.onStart([]() {
+    Serial.println("Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+  ArduinoOTA.begin();
+  Serial.println("Ready");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
 }
 
 void clap() { 
@@ -149,12 +192,26 @@ void clap() {
   }
 }
 
+void shake() {
+  shakeVal = digitalRead(shakePin);
+  if(shakeVal == LOW) {
+    client.publish("clapper/shake", "on", true);
+    Serial.println("I felt that");
+    delay(200);
+    client.publish("clapper/shake", "off", true);
+  }
+}
+
 void loop()
 {
   clap();
+  shake();
       
   //maintain MQTT connection
   client.loop();
+
+  //OTA Handler
+  ArduinoOTA.handle();
   
   if (!client.connected()) {
     reconnect();
